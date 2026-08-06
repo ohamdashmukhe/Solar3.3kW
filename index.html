@@ -54,6 +54,8 @@
     font-size:clamp(52px,8vw,84px);line-height:1;color:var(--gold);}
   .hero-num sub-unit{font-size:.35em;font-style:normal;color:var(--text-dim);margin-left:6px;}
   .hero-cap{font-size:13px;color:var(--text-dim);max-width:280px;line-height:1.5;}
+  .hero-range{font-family:'JetBrains Mono',monospace;font-size:15px;color:var(--text-dim);margin-top:6px;}
+  .hero-range b{color:var(--text);font-weight:600;}
 
   /* spec strip */
   .specs{
@@ -108,6 +110,7 @@
   .cell .date{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-dim);}
   .sun-wrap{align-self:center;margin:2px 0;}
   .cell .kwh{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px;text-align:center;}
+  .cell .kwh-range{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);text-align:center;margin-top:1px;}
   .cell .cloudpct{font-size:10px;color:var(--text-dim);text-align:center;}
   .cell .actual-tag{font-size:10px;color:var(--green);text-align:center;font-family:'JetBrains Mono',monospace;}
   .cell.pending{opacity:.45;}
@@ -134,11 +137,12 @@
 <div class="wrap">
   <div class="eyebrow">Rooftop PV · 18.6529°N, 73.7612°E · Pune</div>
   <h1>Rooftop generation forecast</h1>
-  <p class="sub">Daily kWh prediction for your 3.3 kW rooftop array (10° tilt, south-east facing), built from live irradiance and cloud-cover data. Log your actual generation below — the model learns your real-world performance ratio from it automatically, no manual tuning needed.</p>
+  <p class="sub">Daily kWh range for your 3.3 kW rooftop array (10° tilt, south-east facing), blended from three independent weather models with a temperature-derated performance ratio. Log your actual generation below — the model learns your real-world performance ratio and its uncertainty from it automatically, no manual tuning needed.</p>
 
   <div class="hero">
     <div>
       <div class="hero-num" id="heroTotal">—<sub-unit>kWh</sub-unit></div>
+      <div class="hero-range" id="heroRange"></div>
     </div>
     <div class="hero-cap" id="heroCaption">Loading forecast…</div>
   </div>
@@ -149,6 +153,7 @@
     <div class="spec"><div class="k">Array capacity</div><div class="v">3.3 kW</div></div>
     <div class="spec"><div class="k">Orientation</div><div class="v">10° tilt, SE (fixed)</div></div>
     <div class="spec"><div class="k">Performance ratio</div><div class="v" id="specPR">learning…</div></div>
+    <div class="spec"><div class="k">Weather source</div><div class="v" id="specModels">connecting…</div></div>
   </div>
 
   <div class="controls">
@@ -186,7 +191,7 @@
 </div>
 
 <footer>
-  <p><strong>Method:</strong> Daily energy = 3.3 kW × performance ratio × irradiance (kWh/m², from Open-Meteo's tilted-plane radiation, which already reflects cloud cover, tilt and orientation for this location). The performance ratio is <strong>not</strong> a manual setting — it's calculated from your logged actual-vs-predicted readings (bundling inverter, wiring, temperature and soiling losses together), weighted toward your most recent entries, and recalculated every time you save or import a reading. With no logged data yet it falls back to a reasonable default of 0.75. Weather data covers roughly 92 days back and 16 days ahead of today; dates outside that window show as pending.</p>
+  <p><strong>Method:</strong> Daily energy = 3.3 kW × performance ratio × irradiance (kWh/m², from Open-Meteo's tilted-plane radiation for this exact tilt/orientation) × a temperature de-rate factor (mono-Si panels lose about 0.4%/°C above 25°C — computed from each day's average daylight-hour temperature). Irradiance is <strong>blended across three independent weather models</strong> (ECMWF IFS, NOAA GFS, DWD ICON) rather than a single source, which reduces bias from any one model's error. The <strong>range</strong> shown per day combines two independent sources of uncertainty: how much the three weather models disagree for that day, and how much your own logged performance ratio has varied historically (its recency-weighted mean ± spread). If a model is unreachable, the dashboard falls back to a single model with a synthetic ±10% band, flagged in the weather-source spec. The performance ratio itself is <strong>not</strong> a manual setting — it's calculated from your logged actual-vs-predicted readings (bundling inverter, wiring, and soiling losses together, since temperature is now handled separately), weighted toward your most recent entries, and recalculated every time you save or import a reading. With fewer than 2 logged readings it falls back to a default of 0.75 ± 0.12. Weather data covers roughly 92 days back and 16 days ahead of today; dates outside that window show as pending.</p>
   <p class="ts" id="lastUpdated"></p>
 </footer>
 
@@ -196,12 +201,24 @@ const CAPACITY_KW = 3.3;
 const TILT = 10;
 const AZIMUTH = -45; // South-East, fixed
 const DEFAULT_PR = 0.75;
+const DEFAULT_PR_SPREAD = 0.12; // used when fewer than 2 logged readings
+const TEMP_COEFF_PCT_PER_C = -0.40; // typical mono-Si power temp coefficient, %/°C above 25°C
+const MODELS = ['ecmwf_ifs025','gfs_seamless','icon_seamless'];
+const MODEL_LABELS = {ecmwf_ifs025:'ECMWF', gfs_seamless:'GFS', icon_seamless:'ICON'};
 const STORAGE_KEY = 'solar_dashboard_logs_v1';
 
-let radiationByDate = {}; // 'YYYY-MM-DD' -> kWh/m2/day on tilted plane
-let cloudByDate = {};     // 'YYYY-MM-DD' -> avg cloud %
-let logs = [];            // [{date:'YYYY-MM-DD', kwh: number}]
+let radiationByDate = {};      // 'YYYY-MM-DD' -> blended kWh/m2/day on tilted plane (avg across models)
+let radiationLowByDate = {};   // 'YYYY-MM-DD' -> min across models
+let radiationHighByDate = {};  // 'YYYY-MM-DD' -> max across models
+let cloudByDate = {};          // 'YYYY-MM-DD' -> avg cloud % (blended)
+let tempFactorByDate = {};     // 'YYYY-MM-DD' -> temperature de-rate multiplier
+let modelsUsedByDate = {};     // 'YYYY-MM-DD' -> count of models with data
+let modelsFetched = [];        // list of model ids actually returned this fetch
+let usedFallback = false;      // true if multi-model fetch failed and we fell back
+let logs = [];                 // [{date:'YYYY-MM-DD', kwh: number}]
 let learnedPR = DEFAULT_PR;
+let learnedPRLow = DEFAULT_PR - DEFAULT_PR_SPREAD;
+let learnedPRHigh = DEFAULT_PR + DEFAULT_PR_SPREAD;
 
 /* ---------- persistence ---------- */
 function loadLogs(){
@@ -219,11 +236,15 @@ function saveLogs(){
 // day (PR=1 baseline) to back out an effective performance ratio, then takes
 // a recency-weighted average across all readings that have matching weather data.
 function recomputeLearnedPR(){
+  // Each sample backs out an effective PR from actual/predicted at PR=1, using the
+  // temperature-derated radiation so PR reflects inverter/wiring/soiling losses only
+  // (temperature is already accounted for separately).
   const samples = [];
   logs.forEach(entry=>{
     const rad = radiationByDate[entry.date];
+    const tempFactor = tempFactorByDate[entry.date] ?? 1;
     if(rad === undefined || rad <= 0) return;
-    const rawPR = entry.kwh / (CAPACITY_KW * rad);
+    const rawPR = entry.kwh / (CAPACITY_KW * rad * tempFactor);
     if(rawPR <= 0 || !isFinite(rawPR)) return;
     const clamped = Math.min(1.0, Math.max(0.3, rawPR));
     const daysAgo = Math.round((Date.now() - new Date(entry.date+'T00:00:00Z').getTime()) / 86400000);
@@ -233,14 +254,28 @@ function recomputeLearnedPR(){
 
   if(samples.length === 0){
     learnedPR = DEFAULT_PR;
-    document.getElementById('specPR').textContent = `${DEFAULT_PR.toFixed(2)} (default, no data yet)`;
+    learnedPRLow = Math.max(0.3, DEFAULT_PR - DEFAULT_PR_SPREAD);
+    learnedPRHigh = Math.min(1.0, DEFAULT_PR + DEFAULT_PR_SPREAD);
+    document.getElementById('specPR').textContent = `${DEFAULT_PR.toFixed(2)} ± ${DEFAULT_PR_SPREAD.toFixed(2)} (default, no data yet)`;
     return;
   }
 
   const totalWeight = samples.reduce((s,x)=>s+x.weight,0);
   const weighted = samples.reduce((s,x)=>s+x.clamped*x.weight,0) / totalWeight;
   learnedPR = weighted;
-  document.getElementById('specPR').textContent = `${learnedPR.toFixed(3)} (learned from ${samples.length} reading${samples.length===1?'':'s'})`;
+
+  let spread;
+  if(samples.length < 2){
+    spread = DEFAULT_PR_SPREAD; // can't estimate variance from one point
+  } else {
+    const weightedVar = samples.reduce((s,x)=>s + x.weight*Math.pow(x.clamped-weighted,2), 0) / totalWeight;
+    spread = Math.max(0.02, Math.sqrt(weightedVar)); // floor so range never collapses to zero
+  }
+  learnedPRLow = Math.max(0.3, learnedPR - spread);
+  learnedPRHigh = Math.min(1.0, learnedPR + spread);
+
+  document.getElementById('specPR').textContent =
+    `${learnedPR.toFixed(3)} ± ${spread.toFixed(3)} (from ${samples.length} reading${samples.length===1?'':'s'})`;
 }
 
 /* ---------- log UI ---------- */
@@ -253,18 +288,25 @@ function renderLogTable(){
   const sorted = [...logs].sort((a,b)=> b.date.localeCompare(a.date));
   let rows = sorted.map(entry=>{
     const rad = radiationByDate[entry.date];
-    let predictedCell = '—', deltaCell = '—';
+    const radLow = radiationLowByDate[entry.date];
+    const radHigh = radiationHighByDate[entry.date];
+    const tempFactor = tempFactorByDate[entry.date] ?? 1;
+    let predictedCell = '—', rangeCell = '—', deltaCell = '—';
     if(rad !== undefined){
-      const predicted = CAPACITY_KW * learnedPR * rad;
+      const predicted = CAPACITY_KW * learnedPR * rad * tempFactor;
+      const low = CAPACITY_KW * learnedPRLow * (radLow ?? rad) * tempFactor;
+      const high = CAPACITY_KW * learnedPRHigh * (radHigh ?? rad) * tempFactor;
       const delta = entry.kwh - predicted;
       const deltaClass = delta >= 0 ? 'delta-pos' : 'delta-neg';
       predictedCell = predicted.toFixed(2);
+      rangeCell = `${low.toFixed(1)}–${high.toFixed(1)}`;
       deltaCell = `<span class="${deltaClass}">${delta>=0?'+':''}${delta.toFixed(2)}</span>`;
     }
     return `<tr>
       <td>${entry.date}</td>
       <td>${entry.kwh.toFixed(2)}</td>
       <td>${predictedCell}</td>
+      <td>${rangeCell}</td>
       <td>${deltaCell}</td>
       <td><button class="btn danger" data-del="${entry.date}">Delete</button></td>
     </tr>`;
@@ -272,7 +314,7 @@ function renderLogTable(){
 
   wrap.innerHTML = `
     <table class="log-table">
-      <thead><tr><th>Date</th><th>Actual (kWh)</th><th>Predicted (kWh)</th><th>Delta</th><th></th></tr></thead>
+      <thead><tr><th>Date</th><th>Actual (kWh)</th><th>Predicted (kWh)</th><th>Range</th><th>Delta</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 
@@ -373,44 +415,139 @@ function azimuthLabel(az){
   return best.label;
 }
 
+function tempFactorFor(avgTempC){
+  if(avgTempC === undefined || avgTempC === null || !isFinite(avgTempC)) return 1;
+  const factor = 1 + (TEMP_COEFF_PCT_PER_C/100) * (avgTempC - 25);
+  return Math.min(1.05, Math.max(0.75, factor));
+}
+
+// Accumulate per-model daily sums from an Open-Meteo hourly block for one model's
+// suffixed variable names (or unsuffixed, for the single-model fallback).
+function accumulateModel(hourly, suffix, gtiSums, cloudSums, cloudCounts, tempSums, tempCounts){
+  const gtiKey = suffix ? `global_tilted_irradiance_${suffix}` : 'global_tilted_irradiance';
+  const cloudKey = suffix ? `cloud_cover_${suffix}` : 'cloud_cover';
+  const tempKey = suffix ? `temperature_2m_${suffix}` : 'temperature_2m';
+  const gtiArr = hourly[gtiKey], cloudArr = hourly[cloudKey], tempArr = hourly[tempKey];
+  if(!gtiArr) return false;
+  hourly.time.forEach((t,i)=>{
+    const date = t.slice(0,10);
+    const gti = gtiArr[i];
+    const cc = cloudArr ? cloudArr[i] : null;
+    const temp = tempArr ? tempArr[i] : null;
+    if(gti != null){
+      gtiSums[date] = (gtiSums[date]||0) + gti;
+      if(gti > 0 && temp != null){ // daylight hours only, for a representative daytime temperature
+        tempSums[date] = (tempSums[date]||0) + temp;
+        tempCounts[date] = (tempCounts[date]||0) + 1;
+      }
+    }
+    if(cc != null){
+      cloudSums[date] = (cloudSums[date]||0) + cc;
+      cloudCounts[date] = (cloudCounts[date]||0) + 1;
+    }
+  });
+  return true;
+}
+
 async function fetchForecast(){
   document.getElementById('status').textContent = 'fetching…';
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&hourly=global_tilted_irradiance,cloud_cover&timezone=Asia%2FKolkata&past_days=92&forecast_days=16&tilt=${TILT}&azimuth=${AZIMUTH}`;
+  const base = `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&hourly=global_tilted_irradiance,cloud_cover,temperature_2m&timezone=Asia%2FKolkata&past_days=92&forecast_days=16&tilt=${TILT}&azimuth=${AZIMUTH}`;
+  const multiModelUrl = `${base}&models=${MODELS.join(',')}`;
+
+  radiationByDate = {}; radiationLowByDate = {}; radiationHighByDate = {};
+  cloudByDate = {}; tempFactorByDate = {}; modelsUsedByDate = {};
+
   try{
-    const res = await fetch(url);
+    const res = await fetch(multiModelUrl);
     const data = await res.json();
     if(data.error){ throw new Error(data.reason || 'API returned an error'); }
 
-    const gtiSums = {};
-    const cloudSums = {};
-    const cloudCounts = {};
-    data.hourly.time.forEach((t,i)=>{
-      const date = t.slice(0,10);
-      const gti = data.hourly.global_tilted_irradiance[i];
-      const cc = data.hourly.cloud_cover[i];
-      if(gti != null) gtiSums[date] = (gtiSums[date]||0) + gti;
-      if(cc != null){
-        cloudSums[date] = (cloudSums[date]||0) + cc;
-        cloudCounts[date] = (cloudCounts[date]||0) + 1;
-      }
+    const radByModelDate = {}; // model -> date -> kWh/m2
+    modelsFetched = [];
+    MODELS.forEach(model=>{
+      const gtiSums = {}, cloudSums = {}, cloudCounts = {}, tempSums = {}, tempCounts = {};
+      const ok = accumulateModel(data.hourly, model, gtiSums, cloudSums, cloudCounts, tempSums, tempCounts);
+      if(!ok) return;
+      modelsFetched.push(model);
+      radByModelDate[model] = {};
+      Object.keys(gtiSums).forEach(d=>{
+        radByModelDate[model][d] = {
+          rad: gtiSums[d]/1000,
+          cloud: cloudCounts[d] ? cloudSums[d]/cloudCounts[d] : undefined,
+          temp: tempCounts[d] ? tempSums[d]/tempCounts[d] : undefined,
+        };
+      });
     });
 
-    radiationByDate = {}; // kWh/m2/day on the tilted plane
-    Object.keys(gtiSums).forEach(d=>{ radiationByDate[d] = gtiSums[d]/1000; });
+    if(modelsFetched.length === 0) throw new Error('none of the weather models returned usable data');
+    usedFallback = false;
 
-    cloudByDate = {};
-    Object.keys(cloudSums).forEach(d=>{ cloudByDate[d] = cloudSums[d]/cloudCounts[d]; });
+    // Union of all dates any model has data for
+    const allDates = new Set();
+    modelsFetched.forEach(m=> Object.keys(radByModelDate[m]).forEach(d=>allDates.add(d)));
+
+    allDates.forEach(date=>{
+      const rads = [], clouds = [], temps = [];
+      modelsFetched.forEach(m=>{
+        const entry = radByModelDate[m][date];
+        if(entry){
+          rads.push(entry.rad);
+          if(entry.cloud !== undefined) clouds.push(entry.cloud);
+          if(entry.temp !== undefined) temps.push(entry.temp);
+        }
+      });
+      if(rads.length === 0) return;
+      const blended = rads.reduce((a,b)=>a+b,0)/rads.length;
+      radiationByDate[date] = blended;
+      radiationLowByDate[date] = Math.min(...rads);
+      radiationHighByDate[date] = Math.max(...rads);
+      modelsUsedByDate[date] = rads.length;
+      if(clouds.length) cloudByDate[date] = clouds.reduce((a,b)=>a+b,0)/clouds.length;
+      const avgTemp = temps.length ? temps.reduce((a,b)=>a+b,0)/temps.length : undefined;
+      tempFactorByDate[date] = tempFactorFor(avgTemp);
+    });
 
     document.getElementById('status').textContent = 'live · updated ' + new Date().toLocaleTimeString();
+    document.getElementById('specModels').textContent =
+      `${modelsFetched.length}-model blend (${modelsFetched.map(m=>MODEL_LABELS[m]).join(', ')})`;
     document.getElementById('lastUpdated').textContent =
-      `Last fetched: ${new Date().toLocaleString()} · fixed at 10° tilt, south-east`;
+      `Last fetched: ${new Date().toLocaleString()} · fixed at 10° tilt, south-east · blended from ${modelsFetched.map(m=>MODEL_LABELS[m]).join(', ')} with temperature de-rating`;
 
-    recomputeLearnedPR();
-    renderLogTable();
   }catch(err){
-    document.getElementById('status').textContent = 'forecast fetch failed: ' + (err && err.message ? err.message : err);
-    console.error(err);
+    console.error('Multi-model fetch failed, falling back to single model:', err);
+    try{
+      const res = await fetch(base); // best_match single-model, no models= param
+      const data = await res.json();
+      if(data.error){ throw new Error(data.reason || 'API returned an error'); }
+      usedFallback = true;
+      modelsFetched = ['best_match'];
+
+      const gtiSums = {}, cloudSums = {}, cloudCounts = {}, tempSums = {}, tempCounts = {};
+      accumulateModel(data.hourly, null, gtiSums, cloudSums, cloudCounts, tempSums, tempCounts);
+      Object.keys(gtiSums).forEach(d=>{
+        const rad = gtiSums[d]/1000;
+        radiationByDate[d] = rad;
+        radiationLowByDate[d] = rad * 0.90;  // synthetic ±10% band — no real model spread available
+        radiationHighByDate[d] = rad * 1.10;
+        modelsUsedByDate[d] = 1;
+        cloudByDate[d] = cloudCounts[d] ? cloudSums[d]/cloudCounts[d] : undefined;
+        const avgTemp = tempCounts[d] ? tempSums[d]/tempCounts[d] : undefined;
+        tempFactorByDate[d] = tempFactorFor(avgTemp);
+      });
+
+      document.getElementById('status').textContent = 'live (fallback) · updated ' + new Date().toLocaleTimeString();
+      document.getElementById('specModels').textContent = '1 model (fallback, synthetic ±10% range)';
+      document.getElementById('lastUpdated').textContent =
+        `Last fetched: ${new Date().toLocaleString()} · fixed at 10° tilt, south-east · multi-model blend unavailable, using single-model fallback`;
+    }catch(err2){
+      document.getElementById('status').textContent = 'forecast fetch failed: ' + (err2 && err2.message ? err2.message : err2);
+      document.getElementById('specModels').textContent = 'unavailable';
+      console.error(err2);
+    }
   }
+
+  recomputeLearnedPR();
+  renderLogTable();
 }
 
 function sunIconSVG(cloudPct, energyKwh, maxEnergy){
@@ -470,16 +607,20 @@ function render(){
     const dateStr = fmtDate(dateObj);
     const rad = radiationByDate[dateStr];
     if(rad !== undefined){
-      energies.push(CAPACITY_KW * pr * rad);
+      const tempFactor = tempFactorByDate[dateStr] ?? 1;
+      energies.push(CAPACITY_KW * pr * rad * tempFactor);
     }
   }
   const maxEnergy = energies.length ? Math.max(...energies) : 0;
 
-  let total = 0, forecastDaysCount = 0;
+  let total = 0, totalLow = 0, totalHigh = 0, forecastDaysCount = 0;
   for(let i=0;i<totalDays;i++){
     const dateObj = new Date(start.getTime() + i*MS_PER_DAY);
     const dateStr = fmtDate(dateObj);
     const rad = radiationByDate[dateStr];
+    const radLow = radiationLowByDate[dateStr];
+    const radHigh = radiationHighByDate[dateStr];
+    const tempFactor = tempFactorByDate[dateStr] ?? 1;
     const cloud = cloudByDate[dateStr];
     const label = `${DOW_LABELS[dateObj.getUTCDay()]} ${MONTH_LABELS[dateObj.getUTCMonth()]} ${dateObj.getUTCDate()}`;
     const actualKwh = logByDate[dateStr];
@@ -487,14 +628,17 @@ function render(){
     const cell = document.createElement('div');
 
     if(rad !== undefined){
-      const energy = CAPACITY_KW * pr * rad;
-      total += energy;
+      const energy = CAPACITY_KW * pr * rad * tempFactor;
+      const low = CAPACITY_KW * learnedPRLow * (radLow ?? rad) * tempFactor;
+      const high = CAPACITY_KW * learnedPRHigh * (radHigh ?? rad) * tempFactor;
+      total += energy; totalLow += low; totalHigh += high;
       forecastDaysCount++;
       cell.className = 'cell' + (actualKwh !== undefined ? ' has-actual' : '');
       cell.innerHTML = `
         <div class="date">${label}</div>
         <div class="sun-wrap">${sunIconSVG(cloud ?? 40, energy, maxEnergy)}</div>
         <div class="kwh">${energy.toFixed(2)}</div>
+        <div class="kwh-range">${low.toFixed(1)}–${high.toFixed(1)}</div>
         <div class="cloudpct">${cloud!==undefined ? Math.round(cloud)+'% cloud' : ''}</div>
         ${actualKwh !== undefined ? `<div class="actual-tag">actual: ${actualKwh.toFixed(2)}</div>` : ''}
       `;
@@ -512,8 +656,13 @@ function render(){
   }
 
   document.getElementById('heroTotal').innerHTML = total.toFixed(1) + '<sub-unit>kWh</sub-unit>';
+  document.getElementById('heroRange').innerHTML =
+    forecastDaysCount ? `Range: <b>${totalLow.toFixed(1)} – ${totalHigh.toFixed(1)} kWh</b>` : '';
+  const modelNote = usedFallback
+    ? '1-model fallback with synthetic range'
+    : `${modelsFetched.length}-model blend (${modelsFetched.map(m=>MODEL_LABELS[m]).join(', ')})`;
   document.getElementById('heroCaption').textContent =
-    `Predicted across ${forecastDaysCount} of ${totalDays} days with available weather data in this range. Performance ratio: ${pr.toFixed(3)}.`;
+    `Predicted across ${forecastDaysCount} of ${totalDays} days with available weather data. PR: ${pr.toFixed(3)} (±${(learnedPRHigh-pr).toFixed(3)}). Source: ${modelNote}.`;
 }
 
 document.getElementById('startDate').addEventListener('change', render);
