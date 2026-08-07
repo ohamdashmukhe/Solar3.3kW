@@ -32,7 +32,6 @@
     --violet:#B18CD9;
     --pink:#E893B3;
     --teal:#4FC9C0;
-    --green-deep:#1E8449;
   }
   *{box-sizing:border-box;}
   body{
@@ -136,7 +135,6 @@
   .cell.has-actual{border-color:var(--green);}
   .cell.has-actual.actual-good{border-color:var(--green);}
   .cell.has-actual.actual-bad{border-color:var(--red);}
-  .cell.has-actual.actual-deep{border-color:var(--green-deep);border-width:2px;}
   .cell.has-actual.actual-neutral{border-color:var(--text-dim);}
   .cell .date{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-dim);}
   .sun-wrap{align-self:center;margin:2px 0;}
@@ -148,8 +146,11 @@
   .cell .actual-tag{font-size:10px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:600;}
   .cell .actual-tag.good{color:var(--green);}
   .cell .actual-tag.bad{color:var(--red);}
-  .cell .actual-tag.deep{color:var(--green-deep);}
   .cell .actual-tag.neutral{color:var(--text-dim);}
+  .star-badge{
+    position:absolute;top:7px;right:7px;line-height:0;
+    filter:drop-shadow(0 0 3px rgba(245,166,35,.55));
+  }
   .cell.pending{opacity:.45;}
   .cell.pending .kwh{font-size:11px;font-weight:500;color:var(--text-dim);}
 
@@ -793,17 +794,17 @@ function render(){
     const label = `${DOW_LABELS[dateObj.getUTCDay()]} ${MONTH_LABELS[dateObj.getUTCMonth()]} ${dateObj.getUTCDate()}`;
     const actualKwh = logByDate[dateStr];
 
-    // Color coding for logged actual generation: 7kWh+ always reads as a strong
-    // "deep green" day regardless of forecast; otherwise green if it beat the
-    // prediction, red if it fell short, dim if data's incomplete or it landed exactly on target.
+    // Color coding for logged actual generation: green if it beat the prediction,
+    // red if it fell short, dim if there's nothing to compare it against or it landed
+    // exactly on target. A separate star badge (not a color) marks 7kWh+ days.
     function actualColorClass(actual, predicted){
       if(actual === undefined) return '';
-      if(actual >= 7) return 'deep';
       if(predicted === undefined) return 'neutral';
       if(actual > predicted) return 'good';
       if(actual < predicted) return 'bad';
       return 'neutral';
     }
+    const starBadge = `<span class="star-badge" title="7 kWh+ day"><svg width="15" height="15" viewBox="0 0 24 24"><path d="M12 2.5l2.85 6.2 6.65.85-4.9 4.6 1.3 6.65L12 17.3l-5.9 3.5 1.3-6.65-4.9-4.6 6.65-.85z" fill="var(--sun-mid)" stroke="var(--sun-core)" stroke-width="0.6"/></svg></span>`;
 
     const cell = document.createElement('div');
 
@@ -817,6 +818,7 @@ function render(){
       const colorClass = actualColorClass(actualKwh, energy);
       cell.className = 'cell' + (actualKwh !== undefined ? ` has-actual actual-${colorClass}` : '');
       cell.innerHTML = `
+        ${actualKwh !== undefined && actualKwh >= 7 ? starBadge : ''}
         <div class="date">${label}</div>
         <div class="sun-wrap">${weatherIconSVG(cloud, precip, energy, maxEnergy)}</div>
         <div class="kwh">${energy.toFixed(2)}</div>
@@ -830,6 +832,7 @@ function render(){
       const colorClass = actualColorClass(actualKwh, undefined);
       cell.className = 'cell pending' + (actualKwh !== undefined ? ` has-actual actual-${colorClass}` : '');
       cell.innerHTML = `
+        ${actualKwh !== undefined && actualKwh >= 7 ? starBadge : ''}
         <div class="date">${label}</div>
         <div class="sun-wrap">${weatherIconSVG(50, 0, 0, 1)}</div>
         <div class="kwh">no data</div>
