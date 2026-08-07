@@ -160,7 +160,6 @@
   footer p{font-size:12px;color:var(--text-dim);line-height:1.6;max-width:720px;}
   footer .ts{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);}
 
-  .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
 
   /* mobile optimization */
   @media (max-width:720px){
@@ -189,8 +188,28 @@
     .cell .kwh-range{font-size:8px;}
     .cell .cloudpct,.cell .rainpct,.cell .heattag{font-size:8px;}
     .cell .actual-tag{font-size:8px;}
-    .log-table{font-size:11px;min-width:520px;}
-    .log-table th,.log-table td{padding:7px 6px;}
+
+    /* Log table -> stacked cards on mobile, so nothing overflows the viewport */
+    .log-table{font-size:13px;}
+    .log-table thead{position:absolute;left:-9999px;top:-9999px;}
+    .log-table, .log-table tbody, .log-table tr{display:block;width:100%;}
+    .log-table tr{
+      background:var(--surface-alt);border:1px solid var(--border);border-radius:10px;
+      padding:10px 12px;margin-bottom:10px;
+    }
+    .log-table td{
+      display:flex;justify-content:space-between;align-items:center;gap:10px;
+      padding:6px 0;border-bottom:1px dashed var(--border);
+      text-align:right;
+    }
+    .log-table td:last-child{border-bottom:none;padding-top:10px;}
+    .log-table td[data-label]:not([data-label=""])::before{
+      content:attr(data-label);
+      font-size:11px;text-transform:uppercase;letter-spacing:.04em;
+      color:var(--text-dim);font-family:'Inter',sans-serif;text-align:left;
+    }
+    .log-table td[data-label=""]{justify-content:flex-end;}
+    .log-table .btn.danger{width:auto;padding:6px 14px;}
   }
   @media (max-width:420px){
     .specs{grid-template-columns:1fr 1fr;}
@@ -371,22 +390,20 @@ function renderLogTable(){
       deltaCell = `<span class="${deltaClass}">${delta>=0?'+':''}${delta.toFixed(2)}</span>`;
     }
     return `<tr>
-      <td>${entry.date}</td>
-      <td>${entry.kwh.toFixed(2)}</td>
-      <td>${predictedCell}</td>
-      <td>${rangeCell}</td>
-      <td>${deltaCell}</td>
-      <td><button class="btn danger" data-del="${entry.date}">Delete</button></td>
+      <td data-label="Date">${entry.date}</td>
+      <td data-label="Actual (kWh)">${entry.kwh.toFixed(2)}</td>
+      <td data-label="Predicted (kWh)">${predictedCell}</td>
+      <td data-label="Range">${rangeCell}</td>
+      <td data-label="Delta">${deltaCell}</td>
+      <td data-label=""><button class="btn danger" data-del="${entry.date}">Delete</button></td>
     </tr>`;
   }).join('');
 
   wrap.innerHTML = `
-    <div class="table-scroll">
     <table class="log-table">
       <thead><tr><th>Date</th><th>Actual (kWh)</th><th>Predicted (kWh)</th><th>Range</th><th>Delta</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
-    </table>
-    </div>`;
+    </table>`;
 
   wrap.querySelectorAll('button[data-del]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
