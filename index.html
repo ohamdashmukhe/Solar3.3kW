@@ -152,6 +152,7 @@
     <div class="spec"><div class="k">Panel</div><div class="v">550W Mono</div></div>
     <div class="spec"><div class="k">Panel count</div><div class="v">6 × 550W</div></div>
     <div class="spec"><div class="k">Array capacity</div><div class="v">3.3 kW</div></div>
+    <div class="spec"><div class="k">Panel</div><div class="v">Rayzon RSB550WC × 6</div></div>
     <div class="spec"><div class="k">Orientation</div><div class="v">10° tilt, SE (fixed)</div></div>
     <div class="spec"><div class="k">Performance ratio</div><div class="v" id="specPR">learning…</div></div>
     <div class="spec"><div class="k">Weather source</div><div class="v" id="specModels">connecting…</div></div>
@@ -192,7 +193,7 @@
 </div>
 
 <footer>
-  <p><strong>Method:</strong> Daily energy = 3.3 kW × performance ratio × irradiance (kWh/m², from Open-Meteo's tilted-plane radiation for this exact tilt/orientation), with a temperature de-rate applied <strong>hour by hour</strong> before summing to a daily total — mono-Si panels lose about 0.4%/°C above 25°C, and a day with a mild morning and a scorching afternoon derates only the hot hours rather than the whole day by one averaged factor. Irradiance is <strong>blended across three independent weather models</strong> (ECMWF IFS, NOAA GFS, DWD ICON) rather than a single source, which reduces bias from any one model's error. The <strong>range</strong> shown per day combines two independent sources of uncertainty: how much the three weather models disagree for that day, and how much your own logged performance ratio has varied historically (its recency-weighted mean ± spread). If a model is unreachable, the dashboard falls back to a single model with a synthetic ±10% band, flagged in the weather-source spec. The performance ratio itself is <strong>not</strong> a manual setting — it's calculated from your logged actual-vs-predicted readings (bundling inverter, wiring, and soiling losses together, since temperature is now handled separately at the hourly level), weighted toward your most recent entries, and recalculated every time you save or import a reading. With fewer than 2 logged readings it falls back to a default of 0.75 ± 0.12. Weather data covers roughly 92 days back and 16 days ahead of today; dates outside that window show as pending.</p>
+  <p><strong>Method:</strong> Daily energy = 3.3 kW × performance ratio × irradiance (kWh/m², from Open-Meteo's tilted-plane radiation for this exact tilt/orientation), with a temperature de-rate applied <strong>hour by hour</strong> before summing to a daily total. The de-rate uses your actual panel spec — <strong>Rayzon RSB550WC</strong>, power temperature coefficient <strong>-0.321%/°C</strong> — applied not to raw air temperature but to an <strong>NOCT-modeled cell temperature</strong> (NOCT 44.28°C per the datasheet), since panels run well above ambient air temperature in direct sun; a 35°C Pune afternoon with strong irradiance can put the cells near 55-60°C, which raw ambient temperature alone would miss. Irradiance is <strong>blended across three independent weather models</strong> (ECMWF IFS, NOAA GFS, DWD ICON) rather than a single source, which reduces bias from any one model's error. The <strong>range</strong> shown per day combines two independent sources of uncertainty: how much the three weather models disagree for that day, and how much your own logged performance ratio has varied historically (its recency-weighted mean ± spread). If a model is unreachable, the dashboard falls back to a single model with a synthetic ±10% band, flagged in the weather-source spec. The performance ratio itself is <strong>not</strong> a manual setting — it's calculated from your logged actual-vs-predicted readings (bundling inverter, wiring, and soiling losses together, since temperature is now handled separately at the hourly, cell-temperature level), weighted toward your most recent entries, and recalculated every time you save or import a reading. With fewer than 2 logged readings it falls back to a default of 0.75 ± 0.12. Weather data covers roughly 92 days back and 16 days ahead of today; dates outside that window show as pending. Note: the RSB550WC is a bifacial module (transparent backsheet, ~75% rear-side gain factor per datasheet) — this dashboard currently models front-side output only, since rear-side gain depends heavily on your actual roof clearance and surface reflectivity underneath the panels, which isn't captured by weather data alone.</p>
   <p class="ts" id="lastUpdated"></p>
 </footer>
 
@@ -203,7 +204,9 @@ const TILT = 10;
 const AZIMUTH = -45; // South-East, fixed
 const DEFAULT_PR = 0.75;
 const DEFAULT_PR_SPREAD = 0.12; // used when fewer than 2 logged readings
-const TEMP_COEFF_PCT_PER_C = -0.40; // typical mono-Si power temp coefficient, %/°C above 25°C
+const PANEL_MODEL = 'Rayzon RSB550WC';
+const TEMP_COEFF_PCT_PER_C = -0.3210; // Pmax temp coefficient, from Rayzon RSB550WC datasheet (was a generic -0.40 estimate)
+const NOCT_C = 44.28; // Nominal Operating Cell Temperature, from Rayzon RSB550WC datasheet (800 W/m2, 20°C air, 1 m/s wind)
 const MODELS = ['ecmwf_ifs025','gfs_seamless','icon_seamless'];
 const MODEL_LABELS = {ecmwf_ifs025:'ECMWF', gfs_seamless:'GFS', icon_seamless:'ICON'};
 const STORAGE_KEY = 'solar_dashboard_logs_v1';
@@ -414,17 +417,28 @@ function azimuthLabel(az){
   return best.label;
 }
 
-function tempFactorFor(avgTempC){
-  if(avgTempC === undefined || avgTempC === null || !isFinite(avgTempC)) return 1;
-  const factor = 1 + (TEMP_COEFF_PCT_PER_C/100) * (avgTempC - 25);
+function tempFactorFor(cellTempC){
+  if(cellTempC === undefined || cellTempC === null || !isFinite(cellTempC)) return 1;
+  const factor = 1 + (TEMP_COEFF_PCT_PER_C/100) * (cellTempC - 25);
   return Math.min(1.05, Math.max(0.75, factor));
+}
+
+// Estimate actual cell temperature from ambient air temp + irradiance using the
+// standard NOCT model. Panels run well above ambient in direct sun — at this
+// panel's NOCT (44.28°C at 800 W/m2, 20°C air), full midday sun on a 35°C Pune
+// afternoon puts the cells closer to 55-60°C, not 35°C, which is why using raw
+// ambient temperature (as before) understated heat losses on the sunniest hours.
+function cellTempFromNOCT(ambientC, irradianceWm2){
+  if(ambientC === undefined || ambientC === null || irradianceWm2 == null) return ambientC;
+  return ambientC + ((NOCT_C - 20) / 800) * irradianceWm2;
 }
 
 // Accumulate per-model daily sums from an Open-Meteo hourly block for one model's
 // suffixed variable names (or unsuffixed, for the single-model fallback).
-// Applies the temperature de-rate to EACH hour individually before summing, so a
-// day with a mild morning and a scorching afternoon derates only the hot hours —
-// not the whole day by one averaged factor.
+// Applies the temperature de-rate to EACH hour individually before summing, using
+// an NOCT-modeled cell temperature (not raw ambient air temp) for each hour, so a
+// day with a mild morning and a scorching, high-irradiance afternoon derates only
+// the hours actually running hot — not the whole day by one averaged factor.
 function accumulateModel(hourly, suffix, rawSums, adjSums, cloudSums, cloudCounts){
   const gtiKey = suffix ? `global_tilted_irradiance_${suffix}` : 'global_tilted_irradiance';
   const cloudKey = suffix ? `cloud_cover_${suffix}` : 'cloud_cover';
@@ -433,13 +447,14 @@ function accumulateModel(hourly, suffix, rawSums, adjSums, cloudSums, cloudCount
   if(!gtiArr) return false;
   hourly.time.forEach((t,i)=>{
     const date = t.slice(0,10);
-    const gti = gtiArr[i];
+    const gti = gtiArr[i]; // W/m2 for this hour
     const cc = cloudArr ? cloudArr[i] : null;
     const temp = tempArr ? tempArr[i] : null;
     if(gti != null){
       const hourRad = gti/1000; // kWh/m2 for this hour
       rawSums[date] = (rawSums[date]||0) + hourRad;
-      const hourFactor = tempFactorFor(temp); // per-hour de-rate, defaults to 1 if temp missing
+      const cellTemp = cellTempFromNOCT(temp, gti);
+      const hourFactor = tempFactorFor(cellTemp); // per-hour de-rate, defaults to 1 if temp missing
       adjSums[date] = (adjSums[date]||0) + hourRad*hourFactor;
     }
     if(cc != null){
