@@ -32,6 +32,7 @@
     --violet:#B18CD9;
     --pink:#E893B3;
     --teal:#4FC9C0;
+    --green-deep:#1E8449;
   }
   *{box-sizing:border-box;}
   body{
@@ -133,6 +134,10 @@
   }
   .cell:hover{transform:translateY(-2px);border-color:var(--sun-mid);}
   .cell.has-actual{border-color:var(--green);}
+  .cell.has-actual.actual-good{border-color:var(--green);}
+  .cell.has-actual.actual-bad{border-color:var(--red);}
+  .cell.has-actual.actual-deep{border-color:var(--green-deep);border-width:2px;}
+  .cell.has-actual.actual-neutral{border-color:var(--text-dim);}
   .cell .date{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-dim);}
   .sun-wrap{align-self:center;margin:2px 0;}
   .cell .kwh{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px;text-align:center;}
@@ -140,7 +145,11 @@
   .cell .cloudpct{font-size:10px;color:var(--sky);text-align:center;}
   .cell .rainpct{font-size:10px;color:var(--rain-blue);text-align:center;}
   .cell .heattag{font-size:10px;color:var(--sun-outer);text-align:center;}
-  .cell .actual-tag{font-size:10px;color:var(--green);text-align:center;font-family:'JetBrains Mono',monospace;font-weight:600;}
+  .cell .actual-tag{font-size:10px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:600;}
+  .cell .actual-tag.good{color:var(--green);}
+  .cell .actual-tag.bad{color:var(--red);}
+  .cell .actual-tag.deep{color:var(--green-deep);}
+  .cell .actual-tag.neutral{color:var(--text-dim);}
   .cell.pending{opacity:.45;}
   .cell.pending .kwh{font-size:11px;font-weight:500;color:var(--text-dim);}
 
@@ -784,6 +793,18 @@ function render(){
     const label = `${DOW_LABELS[dateObj.getUTCDay()]} ${MONTH_LABELS[dateObj.getUTCMonth()]} ${dateObj.getUTCDate()}`;
     const actualKwh = logByDate[dateStr];
 
+    // Color coding for logged actual generation: 7kWh+ always reads as a strong
+    // "deep green" day regardless of forecast; otherwise green if it beat the
+    // prediction, red if it fell short, dim if data's incomplete or it landed exactly on target.
+    function actualColorClass(actual, predicted){
+      if(actual === undefined) return '';
+      if(actual >= 7) return 'deep';
+      if(predicted === undefined) return 'neutral';
+      if(actual > predicted) return 'good';
+      if(actual < predicted) return 'bad';
+      return 'neutral';
+    }
+
     const cell = document.createElement('div');
 
     if(rad !== undefined){
@@ -793,7 +814,8 @@ function render(){
       total += energy; totalLow += low; totalHigh += high;
       forecastDaysCount++;
       const heatPct = heatFactor !== undefined ? Math.round((1-heatFactor)*100) : 0;
-      cell.className = 'cell' + (actualKwh !== undefined ? ' has-actual' : '');
+      const colorClass = actualColorClass(actualKwh, energy);
+      cell.className = 'cell' + (actualKwh !== undefined ? ` has-actual actual-${colorClass}` : '');
       cell.innerHTML = `
         <div class="date">${label}</div>
         <div class="sun-wrap">${weatherIconSVG(cloud, precip, energy, maxEnergy)}</div>
@@ -802,16 +824,17 @@ function render(){
         <div class="cloudpct">${cloud!==undefined ? Math.round(cloud)+'% cloud' : ''}</div>
         ${precip !== undefined && precip >= 25 ? `<div class="rainpct">${Math.round(precip)}% rain</div>` : ''}
         ${heatPct >= 2 ? `<div class="heattag">-${heatPct}% heat</div>` : ''}
-        ${actualKwh !== undefined ? `<div class="actual-tag">actual: ${actualKwh.toFixed(2)}</div>` : ''}
+        ${actualKwh !== undefined ? `<div class="actual-tag ${colorClass}">actual: ${actualKwh.toFixed(2)}</div>` : ''}
       `;
     } else {
-      cell.className = 'cell pending' + (actualKwh !== undefined ? ' has-actual' : '');
+      const colorClass = actualColorClass(actualKwh, undefined);
+      cell.className = 'cell pending' + (actualKwh !== undefined ? ` has-actual actual-${colorClass}` : '');
       cell.innerHTML = `
         <div class="date">${label}</div>
         <div class="sun-wrap">${weatherIconSVG(50, 0, 0, 1)}</div>
         <div class="kwh">no data</div>
         <div class="cloudpct">outside fetched window</div>
-        ${actualKwh !== undefined ? `<div class="actual-tag">actual: ${actualKwh.toFixed(2)}</div>` : ''}
+        ${actualKwh !== undefined ? `<div class="actual-tag ${colorClass}">actual: ${actualKwh.toFixed(2)}</div>` : ''}
       `;
     }
     grid.appendChild(cell);
