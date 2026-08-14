@@ -238,8 +238,14 @@
 
   <div class="hero">
     <div>
+      <div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim);margin-bottom:2px;">Predicted</div>
       <div class="hero-num" id="heroTotal">—<sub-unit>kWh</sub-unit></div>
       <div class="hero-range" id="heroRange"></div>
+    </div>
+    <div>
+      <div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim);margin-bottom:2px;">Actual (logged)</div>
+      <div class="hero-num" id="heroActualTotal" style="font-size:clamp(36px,5.5vw,56px);">—<sub-unit>kWh</sub-unit></div>
+      <div class="hero-range" id="heroActualNote"></div>
     </div>
     <div class="hero-cap" id="heroCaption">Loading forecast…</div>
   </div>
@@ -770,6 +776,17 @@ function render(){
   const logByDate = {};
   logs.forEach(l=>{ logByDate[l.date] = l.kwh; });
 
+  // Total actual generation logged within the selected date range
+  let actualTotal = 0, actualDaysCount = 0;
+  for(let i=0;i<totalDays;i++){
+    const dateObj = new Date(start.getTime() + i*MS_PER_DAY);
+    const dateStr = fmtDate(dateObj);
+    if(logByDate[dateStr] !== undefined){
+      actualTotal += logByDate[dateStr];
+      actualDaysCount++;
+    }
+  }
+
   const energies = [];
   for(let i=0;i<totalDays;i++){
     const dateObj = new Date(start.getTime() + i*MS_PER_DAY);
@@ -846,6 +863,12 @@ function render(){
   document.getElementById('heroTotal').innerHTML = total.toFixed(1) + '<sub-unit>kWh</sub-unit>';
   document.getElementById('heroRange').innerHTML =
     forecastDaysCount ? `Range: <b>${totalLow.toFixed(1)} – ${totalHigh.toFixed(1)} kWh</b>` : '';
+
+  document.getElementById('heroActualTotal').innerHTML =
+    (actualDaysCount ? actualTotal.toFixed(1) : '—') + '<sub-unit>kWh</sub-unit>';
+  document.getElementById('heroActualNote').innerHTML = actualDaysCount
+    ? `Actual · <b>${actualDaysCount}</b> logged day${actualDaysCount===1?'':'s'}`
+    : 'Actual · no logs in range';
   const modelNote = usedFallback
     ? '1-model fallback with synthetic range'
     : `${modelsFetched.length}-model blend (${modelsFetched.map(m=>MODEL_LABELS[m]).join(', ')})`;
