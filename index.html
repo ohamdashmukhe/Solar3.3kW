@@ -260,9 +260,9 @@
 
   <div class="controls">
     <label for="startDate">From</label>
-    <input type="date" id="startDate" value="2026-08-01">
+    <input type="date" id="startDate">
     <label for="endDate">To</label>
-    <input type="date" id="endDate" value="2026-08-31">
+    <input type="date" id="endDate">
     <button class="btn secondary" id="refreshBtn">Refresh forecast</button>
     <span id="status"></span>
     <span id="rangeNote" style="font-size:12px;color:var(--text-dim);"></span>
@@ -886,6 +886,13 @@ document.getElementById('refreshBtn').addEventListener('click', async ()=>{
 (async function init(){
   loadLogs();
   document.getElementById('logDate').value = fmtDate(new Date());
+
+  const today = new Date();
+  const defaultStart = new Date(today.getTime() - 15*MS_PER_DAY);
+  const defaultEnd = new Date(today.getTime() + 15*MS_PER_DAY);
+  document.getElementById('startDate').value = fmtDate(defaultStart);
+  document.getElementById('endDate').value = fmtDate(defaultEnd);
+
   await fetchForecast();
   renderLogTable();
   render();
