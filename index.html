@@ -90,6 +90,7 @@
   .spec:nth-child(5){--accent:var(--violet);}
   .spec .k{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;}
   .spec .v{font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--text);}
+  .next10-spec{--accent:var(--sun-mid);margin-bottom:20px;}
 
   /* controls */
   .controls{
@@ -266,6 +267,11 @@
     <button class="btn secondary" id="refreshBtn">Refresh forecast</button>
     <span id="status"></span>
     <span id="rangeNote" style="font-size:12px;color:var(--text-dim);"></span>
+  </div>
+
+  <div class="spec next10-spec">
+    <div class="k">Next 10 days average</div>
+    <div class="v" id="next10Avg">learning…</div>
   </div>
 
   <div class="month-label" id="rangeLabel">Daily output</div>
@@ -772,6 +778,21 @@ function render(){
 
   document.getElementById('rangeLabel').textContent =
     `Daily output — ${fmtDate(start)} to ${fmtDate(end)}`;
+
+  // Next 10 days average — always anchored to today, independent of the selected range
+  const todayForAvg = new Date(fmtDate(new Date())+'T00:00:00Z');
+  let next10Sum = 0, next10Count = 0;
+  for(let i=0;i<10;i++){
+    const d = new Date(todayForAvg.getTime() + i*MS_PER_DAY);
+    const rad = radiationByDate[fmtDate(d)];
+    if(rad !== undefined){
+      next10Sum += CAPACITY_KW * pr * rad;
+      next10Count++;
+    }
+  }
+  document.getElementById('next10Avg').textContent = next10Count
+    ? `${(next10Sum/next10Count).toFixed(2)} kWh/day${next10Count<10 ? ` (${next10Count}/10 days with data)` : ''}`
+    : 'no forecast data yet';
 
   const logByDate = {};
   logs.forEach(l=>{ logByDate[l.date] = l.kwh; });
